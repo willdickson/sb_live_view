@@ -1,68 +1,106 @@
+import os
 import sys
+import enum
 import signal
+import pickle
 import collections
+import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 import seabreeze.spectrometers
+from matplotlib.animation import FuncAnimation
 
 mpl.rcParams['keymap.save'].remove('s')
 mpl.rcParams['keymap.home'].remove('h')
+mpl.rcParams['keymap.pan'].remove('p')
+mpl.rcParams['keymap.fullscreen'].remove('f')
 
+# ----------------------------------------------------------------
 if 0:
     for k, v in mpl.rcParams.items():
         if 'keymap' in k:
             print(k,v)
+# ----------------------------------------------------------------
 
 
 class SpectrometerLiveView: 
 
-    INTENSITY_MODE = 0
-    ABSORBANCE_MODE = 1 
+    class Mode(enum.Enum):
+        INTENSITY = 0
+        TRANSMITTANCE = 1
+        ABSORBANCE = 2
 
-    YRANGE_INTENSITY_DEFAULT = 4000
-    YRANGE_INTENSITY_STEP = 500
-    YRANGE_INTENSITY_MIN = 500
+    YRANGE_PARAM = {
+            Mode.INTENSITY : 
+            { 
+                'default' : 4000,
+                'step'    : 500,
+                'min'     : 500,
+                },
+            Mode.TRANSMITTANCE: 
+            {
+                'default' : 1.1, 
+                'step'    : 0.1, 
+                'min'     : 0.1,
+                },
+            Mode.ABSORBANCE :
+            {
+                'default' : 1.1, 
+                'step'    : 0.1, 
+                'min'     : 0.1,
+                }
+            }
 
-    YRANGE_ABSORBANCE_DEFAULT = 1.1 
-    YRANGE_ABSORBANCE_STEP = 0.1 
-    YRANGE_ABSORBANCE_MIN = 0.1 
+    INTEG_TIME_PARAM = { 
+            'default' : 4000,
+            'step'    : 1000,
+            'min'     : 3000,
+            }
 
-    INTEG_WIN_DEFAULT = 4000
-    INTEG_WIN_STEP = 500 
-    INTEG_WIN_MIN = 3000
-
-    LIVEVIEW_LINE_COLOR = 'b'
-    BLANKING_LINE_COLOR = 'g'
+    LINE_COLOR = {
+            'liveview' : 'b', 
+            'blanking' : 'g', 
+            'peak'     : 'r',
+            }
 
     MODE_TO_YLABEL = {
-            INTENSITY_MODE:  'Intensity', 
-            ABSORBANCE_MODE: 'Absorbance',
+            Mode.INTENSITY     : 'Intensity', 
+            Mode.TRANSMITTANCE : 'Transmittance', 
+            Mode.ABSORBANCE    : 'Absorbance',
             }
     
     MODE_TO_YRANGE_DEFAULT = {
-            INTENSITY_MODE:  YRANGE_INTENSITY_DEFAULT, 
-            ABSORBANCE_MODE: YRANGE_ABSORBANCE_DEFAULT, 
+            Mode.INTENSITY     :  YRANGE_PARAM[Mode.INTENSITY]['default'], 
+            Mode.TRANSMITTANCE :  YRANGE_PARAM[Mode.TRANSMITTANCE]['default'], 
+            Mode.ABSORBANCE    :  YRANGE_PARAM[Mode.ABSORBANCE]['default'], 
             }
+
+    INTENSITY_THRESHOLD = 1
+
+    SAVE_DIRECTORY = 'data'
+    DATA_FILENAME = 'data.pkl'
             
 
     def __init__(self):
 
         self.spectrometer = seabreeze.spectrometers.Spectrometer.from_first_available()
-        self.integ_window = self.INTEG_WIN_DEFAULT
+        self.integ_window = self.INTEG_TIME_PARAM['default']
         self.spectrometer.integration_time_micros(self.integ_window)
         self.wavelengths = self.spectrometer.wavelengths()
         self.blanking_intensities = None
-        self.display_mode = self.INTENSITY_MODE
+        self.current_mode = self.Mode.INTENSITY
+        self.peakfinder_enabled = False
+        self.data = {}
 
         self.fig, self.ax = plt.subplots(1,1)
-        self.liveview_line, = self.ax.plot([],[], self.LIVEVIEW_LINE_COLOR)
-        self.blanking_line, = self.ax.plot([],[], self.BLANKING_LINE_COLOR)
+        self.liveview_line, = self.ax.plot([],[], self.LINE_COLOR['liveview'])
+        self.blanking_line, = self.ax.plot([],[], self.LINE_COLOR['blanking'])
+        self.peak_line, = self.ax.plot([],[], self.LINE_COLOR['peak'])
         
         self.ax.set_xlim(self.wavelengths.min(), self.wavelengths.max()) 
-        self.ax.set_ylim(0, self.YRANGE_INTENSITY_DEFAULT) 
+        self.ax.set_ylim(0, self.YRANGE_PARAM[self.current_mode]['default']) 
         self.ax.set_xlabel('Wavelength (nm)')
-        self.ax.set_ylabel(self.MODE_TO_YLABEL[self.display_mode])
+        self.ax.set_ylabel(self.MODE_TO_YLABEL[self.current_mode])
         self.ax.grid(True)
 
         self.sigint = False
@@ -70,25 +108,31 @@ class SpectrometerLiveView:
 
         self.event_key_to_callback = collections.OrderedDict([
                 ('s'    , self.save), 
+                ('f'    , self.save_figure),
                 ('b'    , self.blank),
                 ('c'    , self.clear_blank),
                 ('up'   , self.increase_y_range),
                 ('down' , self.decrease_y_range) ,
                 ('i'    , self.set_mode_to_intensity) ,
+                ('t'    , self.set_mode_to_transmittance), 
                 ('a'    , self.set_mode_to_absorbance),
+                ('p'    , self.toggle_peakfinder),
                 ('.'    , self.increase_integ_window),
                 (','    , self.decrease_integ_window) ,
                 ('h'    , self.print_help),
                 ])
 
         self.event_key_to_doc = collections.OrderedDict([
-                ('s'    ,   'save figure'),
+                ('s'    ,   'save data'),
+                ('f'    ,   'save current figure'),
                 ('b'    ,   'acquire blanking data'),
                 ('c'    ,   'clear blanking data'),
                 ('up'   ,   'increase plot y axis range'),
                 ('down' ,   'decrease plot y axis range'),
                 ('i'    ,   'display intensity vs wavelength'),
+                ('t'    ,   'display transmittance vs wavelength'),
                 ('a'    ,   'display absorbance vs wavelength'),
+                ('p'    ,   'toggle on/off peak finder'),
                 ('<'    ,   'increase integration window') ,
                 ('>'    ,   'decrease integration window') ,
                 ('h'    ,   'print help message') ,
@@ -104,37 +148,61 @@ class SpectrometerLiveView:
         """
         Switchyard for handling key press events
         """
+        #print(event.key)
         try:
             self.event_key_to_callback[event.key]()
         except KeyError:
-            print(f'KeyError: {event.key}')
+            pass
+            #print(f'KeyError: {event.key}')
 
     def save(self):
         """
-        Save figure and associated data.
+        Save data.
         """
-        print('saving data')
+        os.makedirs(self.SAVE_DIRECTORY, exist_ok=True)
+        data_file = os.path.join(os.curdir, self.SAVE_DIRECTORY, self.DATA_FILENAME)
+        with open(data_file, 'wb') as f:
+            pickle.dump(self.data, f)
+        print(f'data saved to: {data_file}')
+
+    def save_figure(self):
+        """
+        Save figure
+        """
+        os.makedirs(self.SAVE_DIRECTORY, exist_ok=True)
+        mode_str = self.MODE_TO_YLABEL[self.current_mode].lower()
+        fig_filename = f'{mode_str}.png'
+        fig_filename = os.path.join(os.curdir, self.SAVE_DIRECTORY, fig_filename)
+        self.fig.savefig(fig_filename)
+        print(f'figure saved to: {fig_filename}')
 
     def blank(self):
         """
         Save blanking intensities for use during absorbance mode.
         """
-        _, self.blanking_intensities  = self.liveview_line.get_data()
-        print('blanking data acquired')
+        if self.current_mode == self.Mode.INTENSITY:
+            _, self.blanking_intensities  = self.liveview_line.get_data()
+            print('blanking data acquired')
+        else:
+            print("can't acquire blanking data - must be in intensity mode")
 
     def clear_blank(self):
         """
         Clear blanking intentities
         """
-        self.blanking_intensities = None
-        print('clearing blanking data')
+        if self.current_mode == self.Mode.INTENSITY:
+            self.blanking_intensities = None
+            print('blanking data cleared')
+        else:
+            print("can't clear blanking data - must be in intensity mode")
+
 
     def increase_y_range(self):
         """
         Increase the live view plot's y range by one step size.
         """
         y_min, y_max = self.ax.get_ylim()
-        y_max_new = y_max + self.YRANGE_INTENSITY_STEP
+        y_max_new = y_max + self.YRANGE_PARAM[self.current_mode]['step']
         self.ax.set_ylim(y_min, y_max_new)
         print(f'y range = {y_max_new}')
 
@@ -144,7 +212,9 @@ class SpectrometerLiveView:
         the minimum size is reached. 
         """
         y_min, y_max = self.ax.get_ylim()
-        y_max_new = max(y_max - self.YRANGE_INTENSITY_STEP, self.YRANGE_INTENSITY_MIN)
+        step = self.YRANGE_PARAM[self.current_mode]['step']
+        minval = self.YRANGE_PARAM[self.current_mode]['min']
+        y_max_new = max(y_max - step, minval)
         self.ax.set_ylim(y_min, y_max_new)
         print(f'y range = {y_max_new}')
 
@@ -152,9 +222,18 @@ class SpectrometerLiveView:
         """
         Set display mode to intensity
         """
-        self.display_mode = self.INTENSITY_MODE
-        self.ax.set_ylim(0, self.YRANGE_INTENSITY_DEFAULT) 
-        self.ax.set_ylabel(self.MODE_TO_YLABEL[self.display_mode])
+        self.current_mode = self.Mode.INTENSITY
+        self.reset_y_axis()
+
+    def set_mode_to_transmittance(self):
+        """
+        Set display mode to transmittance
+        """
+        if self.blanking_intensities is None:
+            print('unable to display absorbance - no blanking data')
+        else:
+            self.current_mode = self.Mode.TRANSMITTANCE
+            self.reset_y_axis()
 
     def set_mode_to_absorbance(self):
         """
@@ -163,9 +242,29 @@ class SpectrometerLiveView:
         if self.blanking_intensities is None:
             print('unable to display absorbance - no blanking data')
         else:
-            self.display_mode = self.ABSORBANCE_MODE
-            self.ax.set_ylim(0, self.YRANGE_ABSORBANCE_DEFAULT) 
-            self.ax.set_ylabel(self.MODE_TO_YLABEL[self.display_mode])
+            self.current_mode = self.Mode.ABSORBANCE
+            self.reset_y_axis()
+
+    def reset_y_axis(self):
+        self.ax.set_ylim(0, self.YRANGE_PARAM[self.current_mode]['default']) 
+        self.ax.set_ylabel(self.MODE_TO_YLABEL[self.current_mode])
+
+    def toggle_peakfinder(self):
+        if self.peakfinder_enabled:
+            try:
+                print(f"max intensity:     {self.data['maximum_intensity']}")
+            except KeyError:
+                pass
+            try:
+                print(f"min transmittance: {self.data['minimum_transmittance']}")
+            except KeyError:
+                pass
+            try:
+                print(f"max absorbance:    {self.data['maximum_absorbance']}")
+            except KeyError:
+                pass
+        self.peakfinder_enabled = not self.peakfinder_enabled
+        print(f'peak finder enabled = {self.peakfinder_enabled}')
 
     def print_help(self):
         """
@@ -184,7 +283,7 @@ class SpectrometerLiveView:
         """
         Increase the spectrometer integration window by one step
         """
-        self.integ_window += self.INTEG_WIN_STEP
+        self.integ_window += self.INTEG_TIME_PARAM['step']
         self.spectrometer.integration_time_micros(self.integ_window)
         print(f'integration window = {self.integ_window}')
         
@@ -193,8 +292,8 @@ class SpectrometerLiveView:
         """
         Decrease the spectrometer integration window by one step
         """
-        self.integ_window -= self.INTEG_WIN_STEP
-        self.integ_window = max(self.integ_window, self.INTEG_WIN_MIN)
+        self.integ_window -= self.INTEG_TIME_PARAM['step']
+        self.integ_window = max(self.integ_window, self.INTEG_TIME_PARAM['min'])
         self.spectrometer.integration_time_micros(self.integ_window)
         print(f'integration window = {self.integ_window}')
 
@@ -208,17 +307,84 @@ class SpectrometerLiveView:
 
         update_list = []
         intensities = self.spectrometer.intensities()
-        self.liveview_line.set_data(self.wavelengths, intensities)
-        update_list.append(self.liveview_line)
+        maximum_intensity = self.find_peak(self.wavelengths, intensities)
+        self.data = {
+                'wavelengths': self.wavelengths, 
+                'intensities': intensities, 
+                'mode': self.MODE_TO_YLABEL[self.current_mode].lower(),
+                'maximum_intensity' : maximum_intensity,
+                }
 
-        if self.blanking_intensities is not None:
-            self.blanking_line.set_data(self.wavelengths, self.blanking_intensities)
-            update_list.append(self.blanking_line)
+        x, y = [], []
+
+        if self.current_mode == self.Mode.INTENSITY:
+
+            x = self.wavelengths
+            y = intensities
+            peak_x, peak_y = maximum_intensity
+
+            self.liveview_line.set_data(x, y)
+            update_list.append(self.liveview_line)
+
+            if self.blanking_intensities is not None:
+                self.blanking_line.set_data(self.wavelengths, self.blanking_intensities)
+                update_list.append(self.blanking_line)
+                self.data['blanking_intensities'] = self.blanking_intensities
+            else:
+                self.blanking_line.set_data([], [])
+                update_list.append(self.blanking_line)
+
         else:
-            self.blanking_line.set_data(self.wavelengths, self.blanking_intensities)
+
+            mask = self.blanking_intensities > self.INTENSITY_THRESHOLD
+            transmittance = intensities[mask]/self.blanking_intensities[mask]
+            absorbance = -np.log10(transmittance)
+            wavelengths_masked = self.wavelengths[mask]
+
+            minimum_transmittance = self.find_peak(wavelengths_masked, transmittance, 'min')
+            maximum_absorbance = self.find_peak(wavelengths_masked, absorbance, 'max')
+
+            if self.current_mode == self.Mode.TRANSMITTANCE:
+                x = self.wavelengths[mask]
+                y = transmittance
+                peak_x, peak_y = minimum_transmittance
+
+            elif self.current_mode == self.Mode.ABSORBANCE:
+                x = self.wavelengths[mask]
+                y = absorbance 
+                peak_x, peak_y = maximum_absorbance
+
+            self.liveview_line.set_data(x, y)
+            update_list.append(self.liveview_line)
+            self.blanking_line.set_data([], [])
             update_list.append(self.blanking_line)
+
+            self.data['mask'] = mask
+            self.data['tramsmittance'] = transmittance
+            self.data['absorbance'] = absorbance
+            self.data['wavelengths_masked'] = wavelengths_masked
+            self.data['minimum_transmittance'] = minimum_transmittance
+            self.data['maximum_absorbance'] = maximum_absorbance
+
+        if self.peakfinder_enabled: 
+            peak_line_x = [peak_x, peak_x]
+            peak_line_y = [0.0, 1.1*y.max()]
+            self.peak_line.set_data(peak_line_x, peak_line_y)
+
+        else:
+            self.peak_line.set_data([], [])
 
         return update_list 
+
+    def find_peak(self, x, y, peak_type='max'):
+        if peak_type == 'max':
+            ind = y.argmax()
+        else:
+            ind = y.argmin()
+        peak_x = x[ind]
+        peak_y = y[ind]
+        return peak_x, peak_y
+
 
     def sigint_handler(self, signum, frame):
         """
