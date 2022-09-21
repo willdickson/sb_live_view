@@ -10,17 +10,10 @@ import matplotlib.pyplot as plt
 import seabreeze.spectrometers
 from matplotlib.animation import FuncAnimation
 
+mpl.rcParams['keymap.pan'].remove('p')
 mpl.rcParams['keymap.save'].remove('s')
 mpl.rcParams['keymap.home'].remove('h')
-mpl.rcParams['keymap.pan'].remove('p')
 mpl.rcParams['keymap.fullscreen'].remove('f')
-
-# ----------------------------------------------------------------
-if 0:
-    for k, v in mpl.rcParams.items():
-        if 'keymap' in k:
-            print(k,v)
-# ----------------------------------------------------------------
 
 
 class SpectrometerLiveView: 

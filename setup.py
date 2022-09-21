@@ -24,6 +24,7 @@ setup(
 
     packages=find_packages(exclude=['examples',]),
     #install_requires = [
+    #    'numpy'>=1.23.3',
     #    'matplotlib>=3.0.0', 
     #    'seabreeze>=2.0.0',
     #    ],
