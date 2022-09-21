@@ -13,3 +13,9 @@ Requires:
 
 ![commands_image](images/commands.png)
 
+![commands_image](images/absorbance.png)
+
+![commands_image](images/transmittance.png)
+
+![commands_image](images/intensity_w_line.png)
+
