@@ -164,7 +164,10 @@ class SpectrometerLiveView:
         """
         os.makedirs(self.SAVE_DIRECTORY, exist_ok=True)
         mode_str = self.MODE_TO_YLABEL[self.current_mode].lower()
-        fig_filename = f'{mode_str}.png'
+        if self.peakfinder_enabled: 
+            fig_filename = f'{mode_str}_w_peak.png'
+        else:
+            fig_filename = f'{mode_str}.png'
         fig_filename = os.path.join(os.curdir, self.SAVE_DIRECTORY, fig_filename)
         self.fig.savefig(fig_filename)
         print(f'figure saved to: {fig_filename}')
