@@ -73,7 +73,6 @@ class SpectrometerLiveView:
     SAVE_DIRECTORY = 'data'
     DATA_FILENAME = 'data.pkl'
             
-
     def __init__(self):
 
         self.spectrometer = seabreeze.spectrometers.Spectrometer.from_first_available()
@@ -88,7 +87,7 @@ class SpectrometerLiveView:
         self.fig, self.ax = plt.subplots(1,1)
         self.liveview_line, = self.ax.plot([],[], self.LINE_COLOR['liveview'])
         self.blanking_line, = self.ax.plot([],[], self.LINE_COLOR['blanking'])
-        self.peak_line, = self.ax.plot([],[], self.LINE_COLOR['peak'])
+        self.peakfind_line, = self.ax.plot([],[], self.LINE_COLOR['peak'])
         
         self.ax.set_xlim(self.wavelengths.min(), self.wavelengths.max()) 
         self.ax.set_ylim(0, self.YRANGE_PARAM[self.current_mode]['default']) 
@@ -298,79 +297,65 @@ class SpectrometerLiveView:
         Read intensities from sensor and update live plot
         """
         if self.sigint:
-            print('googbye')
+            print('quiting ... googbye')
             exit(0)
 
-        update_list = []
+        self.data = {}
+        line_update_list = []
+
+        # Read data from spectrometer and save in data dict
         intensities = self.spectrometer.intensities()
         maximum_intensity = self.find_peak(self.wavelengths, intensities)
-        self.data = {
-                'wavelengths': self.wavelengths, 
-                'intensities': intensities, 
-                'mode': self.MODE_TO_YLABEL[self.current_mode].lower(),
-                'maximum_intensity' : maximum_intensity,
-                }
-
-        x, y = [], []
-
-        if self.current_mode == self.Mode.INTENSITY:
-
-            x = self.wavelengths
-            y = intensities
-            peak_x, peak_y = maximum_intensity
-
-            self.liveview_line.set_data(x, y)
-            update_list.append(self.liveview_line)
-
-            if self.blanking_intensities is not None:
-                self.blanking_line.set_data(self.wavelengths, self.blanking_intensities)
-                update_list.append(self.blanking_line)
-                self.data['blanking_intensities'] = self.blanking_intensities
-            else:
-                self.blanking_line.set_data([], [])
-                update_list.append(self.blanking_line)
-
-        else:
-
+        self.data['mode'] = self.MODE_TO_YLABEL[self.current_mode].lower()
+        self.data['wavelengths'] = self.wavelengths 
+        self.data['intensities'] = intensities 
+        self.data['maximum_intensity'] =  maximum_intensity
+        if self.blanking_intensities is not None:
             mask = self.blanking_intensities > self.INTENSITY_THRESHOLD
             transmittance = intensities[mask]/self.blanking_intensities[mask]
             absorbance = -np.log10(transmittance)
             wavelengths_masked = self.wavelengths[mask]
-
             minimum_transmittance = self.find_peak(wavelengths_masked, transmittance, 'min')
             maximum_absorbance = self.find_peak(wavelengths_masked, absorbance, 'max')
-
-            if self.current_mode == self.Mode.TRANSMITTANCE:
-                x = self.wavelengths[mask]
-                y = transmittance
-                peak_x, peak_y = minimum_transmittance
-
-            elif self.current_mode == self.Mode.ABSORBANCE:
-                x = self.wavelengths[mask]
-                y = absorbance 
-                peak_x, peak_y = maximum_absorbance
-
-            self.liveview_line.set_data(x, y)
-            update_list.append(self.liveview_line)
-            self.blanking_line.set_data([], [])
-            update_list.append(self.blanking_line)
-
             self.data['mask'] = mask
             self.data['tramsmittance'] = transmittance
             self.data['absorbance'] = absorbance
             self.data['wavelengths_masked'] = wavelengths_masked
             self.data['minimum_transmittance'] = minimum_transmittance
             self.data['maximum_absorbance'] = maximum_absorbance
+            self.data['blanking_intensities'] = self.blanking_intensities
 
+        # Get liveview, blanking and peakfind x,y data based on mode
+        liveview_x, liveview_y = [], []
+        blanking_x, blanking_y = [], []
+        peakfind_x, peakfind_y = [], []
+        if self.current_mode == self.Mode.INTENSITY:
+            liveview_x = self.wavelengths
+            liveview_y = intensities
+            peak_x_val, peak_y_val = maximum_intensity
+            if self.blanking_intensities is not None:
+                blanking_x = self.wavelengths
+                blanking_y = self.blanking_intensities
+        elif self.current_mode == self.Mode.TRANSMITTANCE: 
+            liveview_x = self.wavelengths[mask] 
+            liveview_y = transmittance 
+            peak_x_val, peak_y_val = minimum_transmittance
+        elif self.current_mode == self.Mode.ABSORBANCE: 
+            liveview_x = self.wavelengths[mask] 
+            liveview_y = absorbance 
+            peak_x_val, peak_y_val = maximum_absorbance
         if self.peakfinder_enabled: 
-            peak_line_x = [peak_x, peak_x]
-            peak_line_y = [0.0, 1.1*y.max()]
-            self.peak_line.set_data(peak_line_x, peak_line_y)
+            peakfind_x = [peak_x_val, peak_x_val]
+            peakfind_y = [0.0, 1.1*y.max()]
 
-        else:
-            self.peak_line.set_data([], [])
-
-        return update_list 
+        # Update live view and blanking lines
+        self.liveview_line.set_data(liveview_x, liveview_y)
+        line_update_list.append(self.liveview_line)
+        self.blanking_line.set_data(blanking_x, blanking_y)
+        line_update_list.append(self.blanking_line)
+        self.peakfind_line.set_data(peakfind_x, peakfind_y)
+        line_update_list.append(self.peakfind_line)
+        return line_update_list 
 
     def find_peak(self, x, y, peak_type='max'):
         if peak_type == 'max':
@@ -380,7 +365,6 @@ class SpectrometerLiveView:
         peak_x = x[ind]
         peak_y = y[ind]
         return peak_x, peak_y
-
 
     def sigint_handler(self, signum, frame):
         """
