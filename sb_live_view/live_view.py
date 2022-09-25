@@ -346,7 +346,7 @@ class SpectrometerLiveView:
             peak_x_val, peak_y_val = maximum_absorbance
         if self.peakfinder_enabled: 
             peakfind_x = [peak_x_val, peak_x_val]
-            peakfind_y = [0.0, 1.1*y.max()]
+            peakfind_y = [0.0, 1.1*peak_y_val.max()]
 
         # Update live view and blanking lines
         self.liveview_line.set_data(liveview_x, liveview_y)
